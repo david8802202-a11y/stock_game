@@ -136,4 +136,300 @@ elif st.session_state.page == "main":
     if st.session_state.pending_event:
         ev = st.session_state.pending_event
         
-        with st.
+        with st.container(border=True):
+            st.markdown(f"### 🎲 {ev['name']}")
+            st.markdown(f"*類別: {ev['category']}*")
+            st.markdown(ev["text"])
+            st.markdown("---")
+            
+            st.markdown("**你的選擇:**")
+            for i, choice in enumerate(ev["choices"]):
+                can_do = can_afford(player, choice.get("requires", {}))
+                
+                if can_do:
+                    if st.button(choice["text"], key=f"choice_{i}", use_container_width=True):
+                        # 套用後果
+                        messages = apply_effects(player, choice["effects"])
+                        
+                        # 記錄事件
+                        player["event_history"].append({
+                            "turn": player["turn"],
+                            "event": ev["name"],
+                            "choice": choice["text"],
+                        })
+                        if ev.get("once_only"):
+                            player["triggered_once"].add(ev["id"])
+                        
+                        st.session_state.last_messages = [f"📌 {ev['name']}: {choice['text']}"] + messages
+                        st.session_state.pending_event = None
+                        st.rerun()
+                else:
+                    # 如果是因為沒現金，貼心提示玩家去變賣持股
+                    st.button(f"❌ {choice['text']} (需備妥現款 ${choice['requires']['cash_min']:,}。請至下方「我的持股」分頁賣股換現再行選擇)", 
+                            key=f"choice_{i}", disabled=True, use_container_width=True)
+    
+    else:
+        # ========== 主要操作介面 ==========
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 股市交易", "💼 我的持股", "📜 事件履歷", "📈 走勢"])
+        
+        # ----- 股市 Tab -----
+        with tab1:
+            st.markdown("#### 即時彈性下單")
+            for sid, info in STOCKS.items():
+                price = player["market_prices"][sid]
+                
+                # 計算過去 21 天漲跌
+                history = player["price_history"][sid]
+                if len(history) >= 22:
+                    prev_price = history[-22]
+                    change = (price - prev_price) / prev_price * 100
+                else:
+                    change = 0
+                
+                col_info, col_price, col_action = st.columns([2, 1, 2])
+                with col_info:
+                    st.markdown(f"**{sid} {info['name']}**")
+                    st.caption(f"{info['category']} · 殖利率 {info['yield_rate']*100:.1f}%")
+                with col_price:
+                    color = "🟢" if change >= 0 else "🔴"
+                    st.markdown(f"### ${price:.1f}")
+                    st.caption(f"{color} 月變動 {change:+.1f}%")
+                
+                with col_action:
+                    # 確保字典結構初始化完成
+                    if sid not in st.session_state.trade_amounts:
+                        st.session_state.trade_amounts[sid] = 0
+                        
+                    # 1. 交易單位選擇器 (1股 / 10股 / 100股 / 1張)
+                    unit_options = {"1股": 1, "10股": 10, "100股": 100, "1張 (1000股)": 1000}
+                    selected_unit_label = st.radio(
+                        "交易單位", 
+                        options=list(unit_options.keys()), 
+                        key=f"unit_{sid}", 
+                        horizontal=True,
+                        label_visibility="collapsed"
+                    )
+                    unit_multiplier = unit_options[selected_unit_label]
+                    
+                    # 2. 數量輸入框 (安全機制：改綁定獨立儲存區，避免修改 widget 的 key 導致崩潰)
+                    input_num = st.number_input(
+                        f"下單數量 ({selected_unit_label})", 
+                        min_value=0, 
+                        value=st.session_state.trade_amounts[sid], 
+                        step=1, 
+                        key=f"num_widget_{sid}"
+                    )
+                    
+                    # 換算實際零股股數與總成交價
+                    actual_shares = input_num * unit_multiplier
+                    total_estimated_cost = actual_shares * price
+                    
+                    # 4. 提供使用者當前成本與總價預估試算
+                    if actual_shares > 0:
+                        st.markdown(f"📋 **下單試算**：單價 `${price:.1f}` × 換算總計 `{actual_shares:,}` 股")
+                        st.markdown(f"💰 預估成交總額：**`${total_estimated_cost:,.0f}`**")
+                    else:
+                        st.caption("請輸入數量進行金額試算")
+                    
+                    btn_col1, btn_col2 = st.columns(2)
+                    with btn_col1:
+                        if st.button(f"買進", key=f"btn_buy_{sid}", 
+                                     disabled=(actual_shares == 0), use_container_width=True):
+                            
+                            if player["cash"] < total_estimated_cost:
+                                st.session_state.last_messages = [f"❌ 交易失敗：現金餘額不足！欲購買總額 ${total_estimated_cost:,.0f}，當前帳戶僅有 ${player['cash']:,.0f}。"]
+                            else:
+                                ok, msg = buy_stock(player, sid, actual_shares)
+                                if ok:
+                                    remaining_cash = player["cash"]
+                                    # 2. 明確回報成交與剩餘金額明細
+                                    st.session_state.last_messages = [
+                                        f"✅ 交易成功！",
+                                        f"▪️ 標的：{sid} {info['name']}",
+                                        f"▪️ 成交股數：{actual_shares:,} 股 (即 {input_num} {selected_unit_label})",
+                                        f"▪️ 成交單價：${price:.1f}",
+                                        f"▪️ 總成交金額：${total_estimated_cost:,.0f}",
+                                        f"▪️ 帳戶剩餘現金：${remaining_cash:,.0f}"
+                                    ]
+                                    st.session_state.trade_amounts[sid] = 0  # 買成功後清除輸入
+                                else:
+                                    st.session_state.last_messages = [f"❌ 交易失敗: {msg}"]
+                            st.rerun()
+                            
+                    with btn_col2:
+                        if st.button(f"賣出", key=f"btn_sell_{sid}",
+                                     disabled=(actual_shares == 0), use_container_width=True):
+                            
+                            player_owned_shares = player["holdings"].get(sid, {}).get("shares", 0)
+                            if player_owned_shares < actual_shares:
+                                st.session_state.last_messages = [f"❌ 交易失敗：券商庫存不足！你目前僅持有該股 {player_owned_shares:,} 股，無法賣出 {actual_shares:,} 股。"]
+                            else:
+                                ok, msg = sell_stock(player, sid, actual_shares)
+                                if ok:
+                                    remaining_cash = player["cash"]
+                                    # 2. 明確回報成交與剩餘金額明細
+                                    st.session_state.last_messages = [
+                                        f"✅ 變賣成功！",
+                                        f"▪️ 標的：{sid} {info['name']}",
+                                        f"▪️ 賣出股數：{actual_shares:,} 股 (即 {input_num} {selected_unit_label})",
+                                        f"▪️ 成交單價：${price:.1f}",
+                                        f"▪️ 獲得現金：${total_estimated_cost:,.0f}",
+                                        f"▪️ 帳戶當前現金：${remaining_cash:,.0f}"
+                                    ]
+                                    st.session_state.trade_amounts[sid] = 0  # 賣成功後清除輸入
+                                else:
+                                    st.session_state.last_messages = [f"❌ 交易失敗: {msg}"]
+                            st.rerun()
+                st.divider()
+        
+        # ----- 我的持股 Tab -----
+        with tab2:
+            if player["holdings"]:
+                holdings_data = []
+                for sid, h in player["holdings"].items():
+                    if h["shares"] <= 0:
+                        continue
+                    price = player["market_prices"][sid]
+                    value = h["shares"] * price
+                    cost = h["shares"] * h["avg_cost"]
+                    pnl = value - cost
+                    pnl_pct = (pnl / cost * 100) if cost > 0 else 0
+                    
+                    # 貼心為玩家自動換算成「幾張幾股」
+                    display_shares = f"{h['shares']:,} 股"
+                    if h["shares"] >= 1000:
+                        display_shares += f" ({h['shares'] // 1000}張 零 {h['shares'] % 1000}股)"
+                        
+                    holdings_data.append({
+                        "代號": sid,
+                        "名稱": STOCKS[sid]["name"],
+                        "持股庫存": display_shares,
+                        "平均持股成本": f"${h['avg_cost']:.1f}",
+                        "目前市價": f"${price:.1f}",
+                        "目前總市值": f"${int(value):,}",
+                        "累積損益": f"${int(pnl):+,}",
+                        "投資報酬率": f"{pnl_pct:+.1f}%",
+                    })
+                if holdings_data:
+                    df = pd.DataFrame(holdings_data)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("還沒有任何持股,去股市買進吧!")
+            else:
+                st.info("還沒有任何持股,去股市買進吧!")
+        
+        # ----- 事件履歷 Tab -----
+        with tab3:
+            if player["event_history"]:
+                df = pd.DataFrame([
+                    {"月份": e["turn"], "事件": e["event"], "選擇": e["choice"]}
+                    for e in reversed(player["event_history"])
+                ])
+                st.dataframe(df, use_container_width=True, hide_index=True)
+            else:
+                st.info("還沒有經歷任何事件")
+        
+        # ----- 走勢 Tab -----
+        with tab4:
+            df_data = {}
+            for sid, info in STOCKS.items():
+                history = player["price_history"][sid]
+                df_data[f"{sid} {info['name']}"] = history
+            
+            # 對齊長度
+            max_len = max(len(v) for v in df_data.values())
+            for k in df_data:
+                df_data[k] = df_data[k] + [None] * (max_len - len(df_data[k]))
+            
+            df = pd.DataFrame(df_data)
+            st.line_chart(df)
+        
+        # ========== 上回合事件/交易即時動態 ==========
+        if st.session_state.last_messages:
+            with st.expander("📬 本月即時動態 / 交易成交回報", expanded=True):
+                for msg in st.session_state.last_messages:
+                    st.write(msg)
+        
+        st.divider()
+        
+        # ========== 下個月按鈕 ==========
+        col_btn1, col_btn2 = st.columns([3, 1])
+        with col_btn1:
+            if st.button("⏭️ 結束本月 (進入下個月)", type="primary", use_container_width=True):
+                # 1. 月結算
+                sentiment = roll_market_sentiment()
+                messages = monthly_settlement(player, sentiment)
+                
+                # 檢查破產
+                if player["game_over"]:
+                    st.session_state.last_messages = messages
+                    st.session_state.page = "ending"
+                    st.rerun()
+                
+                # 2. 推進回合
+                player["turn"] += 1
+                
+                # 3. 檢查是否到結局
+                if player["turn"] > TOTAL_TURNS:
+                    st.session_state.page = "ending"
+                    st.rerun()
+                
+                # 4. 擲事件骰（不論是中發票、被裁員，或是老家漏水等突發開銷，現在都統一集中在 events.py 抽選）
+                event = roll_event(player, player["turn"])
+                if event:
+                    st.session_state.pending_event = event
+                
+                # 月份推進時，把當前所有下單輸入框的快取數字徹底清空歸零
+                st.session_state.trade_amounts = {sid: 0 for sid in STOCKS.keys()}
+                st.session_state.last_messages = messages
+                st.rerun()
+        
+        with col_btn2:
+            if st.button("🏠 放棄重來", use_container_width=True):
+                st.session_state.page = "start"
+                st.session_state.player = None
+                st.session_state.pending_event = None
+                st.session_state.last_messages = []
+                st.session_state.trade_amounts = {}
+                st.rerun()
+
+
+# ==================== 結局畫面 ====================
+elif st.session_state.page == "ending":
+    player = st.session_state.player
+    ending = determine_ending(player)
+    
+    st.title("🎬 遊戲結束")
+    st.balloons()
+    
+    st.markdown(f"## {ending['title']}")
+    st.markdown(f"### 評價: **{ending['rank']}**")
+    st.info(ending["desc"])
+    
+    st.divider()
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("最終淨值", f"${get_net_worth(player):,}")
+    with col2:
+        st.metric("現金", f"${player['cash']:,.0f}")
+    with col3:
+        st.metric("持股市值", f"${get_total_holdings_value(player):,}")
+    
+    st.divider()
+    
+    st.markdown("### 你的人生大事")
+    if player["event_history"]:
+        df = pd.DataFrame([
+            {"月份": e["turn"], "事件": e["event"], "選擇": e["choice"]}
+            for e in player["event_history"]
+        ])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    
+    if st.button("🔄 再玩一次", type="primary", use_container_width=True):
+        st.session_state.page = "start"
+        st.session_state.player = None
+        st.session_state.pending_event = None
+        st.session_state.last_messages = []
+        st.session_state.trade_amounts = {}
+        st.rerun()
