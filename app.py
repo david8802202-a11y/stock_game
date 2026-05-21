@@ -1,5 +1,5 @@
 """股海人生 - 股市投資 × 人生模擬遊戲
-MVP 版本 - 純文字介面,驗證遊戲機制
+MVP 版本 - 升級零股交易、即時成本試算與每月抉擇事件
 """
 import streamlit as st
 import pandas as pd
@@ -17,7 +17,7 @@ from jobs import JOBS
 
 
 # ==================== Streamlit 設定 ====================
-st.set_page_config(page_title="股海人生", page_icon="📈", layout="wide")
+st.set_page_config(page_title="股海人生 v2", page_icon="📈", layout="wide")
 
 # 5 年 = 60 個月
 TOTAL_TURNS = 60
@@ -36,15 +36,14 @@ if "last_messages" not in st.session_state:
 
 # ==================== 開始畫面 ====================
 if st.session_state.page == "start":
-    st.title("📈 股海人生")
+    st.title("📈 股海人生 (零股交易微調版)")
     st.subheader("一場 5 年的投資與人生模擬")
     
     st.markdown("""
     ### 遊戲規則
     - 你扮演一個 **25 歲的上班族**,要存錢、投資、應對人生意外
-    - 每個月你可以 **買賣股票** 來累積財富
-    - 但人生不只投資 — 隨機事件會考驗你的現金流規劃
-    - **沒現金時會被迫賣股**,這是這個遊戲最殘酷也最真實的機制
+    - 本版本支援 **零股交易**,你可以自由輸入想買賣的「股數」（非張數）
+    - 每月結算時若觸發 **臨時人生事件**，你可以選擇保留現金或變賣持股應對！
     - 5 年 (60 個月) 後結算,看你能達到什麼結局
     
     ### 你的目標
@@ -127,7 +126,7 @@ elif st.session_state.page == "main":
     
     st.divider()
     
-    # ========== 事件對話框 ==========
+    # ========== 事件對話框 (包含第3點：每月臨時事件抉擇) ==========
     if st.session_state.pending_event:
         ev = st.session_state.pending_event
         
@@ -159,20 +158,21 @@ elif st.session_state.page == "main":
                         st.session_state.pending_event = None
                         st.rerun()
                 else:
-                    st.button(f"❌ {choice['text']} (需 ${choice['requires']['cash_min']:,})", 
+                    # 如果是因為沒現金，提示玩家去旁邊的「我的持股」分頁先主動賣股，再來按這個按鈕
+                    st.button(f"❌ {choice['text']} (現金不足！你需要 ${choice['requires']['cash_min']:,}。請前往變賣股票換取現金)", 
                             key=f"choice_{i}", disabled=True, use_container_width=True)
     
     else:
         # ========== 主要操作介面 ==========
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 股市", "💼 我的持股", "📜 事件履歷", "📈 走勢"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 股市交易", "💼 我的持股", "📜 事件履歷", "📈 走勢"])
         
-        # ----- 股市 Tab -----
+        # ----- 股市 Tab (修正功能 1, 2, 4) -----
         with tab1:
-            st.markdown("#### 即時股價")
+            st.markdown("#### 即時零股下單")
             for sid, info in STOCKS.items():
                 price = player["market_prices"][sid]
                 
-                # 計算過去 21 天漲跌
+                # 計算月漲跌
                 history = player["price_history"][sid]
                 if len(history) >= 22:
                     prev_price = history[-22]
@@ -186,42 +186,79 @@ elif st.session_state.page == "main":
                     st.caption(f"{info['category']} · 殖利率 {info['yield_rate']*100:.1f}%")
                 with col_price:
                     color = "🟢" if change >= 0 else "🔴"
-                    st.markdown(f"### ${price:.0f}")
+                    st.markdown(f"### ${price:.1f}")
                     st.caption(f"{color} 月變動 {change:+.1f}%")
                 
                 with col_action:
-                    # 💡 關鍵修正：建立唯一的 key 並將輸入張數鎖定在 session_state 中，避免重刷遺失
                     input_key = f"num_input_{sid}"
+                    # 修正 1：改為「股數」輸入（零股最小單位為 1 股）
                     shares_buy = st.number_input(
-                        f"張數", 
+                        f"股數", 
                         min_value=0, 
                         value=st.session_state.get(input_key, 0), 
-                        step=1, 
+                        step=10, 
                         key=input_key, 
                         label_visibility="collapsed"
                     )
                     
+                    # 修正 4：動態提供「當前單價」與「預估成交總額」
+                    total_estimated_cost = shares_buy * price
+                    if shares_buy > 0:
+                        st.markdown(f"💰 現價: `${price:.1f}` | 預估總額: `${total_estimated_cost:,.0f}`")
+                    else:
+                        st.caption("請輸入股數進行試算")
+                    
                     btn_col1, btn_col2 = st.columns(2)
                     with btn_col1:
-                        if st.button(f"買 {shares_buy} 張", key=f"btn_buy_{sid}", 
+                        if st.button(f"買進零股", key=f"btn_buy_{sid}", 
                                      disabled=(shares_buy == 0), use_container_width=True):
-                            ok, msg = buy_stock(player, sid, shares_buy * 1000)
-                            if ok:
-                                st.session_state.last_messages = [f"✅ 交易成功: {msg}"]
-                                st.session_state[input_key] = 0  # 買成功後輸入框歸零
+                            
+                            # 核心邏輯防呆檢查
+                            if player["cash"] < total_estimated_cost:
+                                st.session_state.last_messages = [f"❌ 交易失敗：現金餘額不足！欲購買總額 ${total_estimated_cost:,.0f}，當前僅有 ${player['cash']:,.0f}。"]
                             else:
-                                st.session_state.last_messages = [f"❌ 交易失敗: {msg}"]
+                                # 修正 1：不乘 1000，直接傳入真實股數進 game_core 的函數
+                                ok, msg = buy_stock(player, sid, shares_buy) 
+                                if ok:
+                                    # 修正 2：明確回報交易明細與餘額
+                                    remaining_cash = player["cash"]
+                                    st.session_state.last_messages = [
+                                        f"✅ 交易成功！",
+                                        f"▪️ 標的：{sid} {info['name']}",
+                                        f"▪️ 成交股數：{shares_buy:,} 股",
+                                        f"▪️ 成交單價：${price:.1f}",
+                                        f"▪️ 總成交金額：${total_estimated_cost:,.0f}",
+                                        f"▪️ 帳戶剩餘現金：${remaining_cash:,.0f}"
+                                    ]
+                                    st.session_state[input_key] = 0  # 歸零
+                                else:
+                                    st.session_state.last_messages = [f"❌ 交易失敗: {msg}"]
                             st.rerun()
                             
                     with btn_col2:
-                        if st.button(f"賣 {shares_buy} 張", key=f"btn_sell_{sid}",
+                        if st.button(f"賣出零股", key=f"btn_sell_{sid}",
                                      disabled=(shares_buy == 0), use_container_width=True):
-                            ok, msg = sell_stock(player, sid, shares_buy * 1000)
-                            if ok:
-                                st.session_state.last_messages = [f"✅ 交易成功: {msg}"]
-                                st.session_state[input_key] = 0  # 賣成功後輸入框歸零
+                            
+                            # 檢查玩家是不是真的有這麼多持股
+                            player_owned_shares = player["holdings"].get(sid, {}).get("shares", 0)
+                            if player_owned_shares < shares_buy:
+                                st.session_state.last_messages = [f"❌ 交易失敗：券商庫存不足！你目前僅持有該股 {player_owned_shares:,} 股，無法賣出 {shares_buy:,} 股。"]
                             else:
-                                st.session_state.last_messages = [f"❌ 交易失敗: {msg}"]
+                                ok, msg = sell_stock(player, sid, shares_buy)
+                                if ok:
+                                    # 修正 2：回報賣出細節與剩餘金額
+                                    remaining_cash = player["cash"]
+                                    st.session_state.last_messages = [
+                                        f"✅ 變賣成功！",
+                                        f"▪️ 標的：{sid} {info['name']}",
+                                        f"▪️ 賣出股數：{shares_buy:,} 股",
+                                        f"▪️ 成交單價：${price:.1f}",
+                                        f"▪️ 獲得現金：${total_estimated_cost:,.0f}",
+                                        f"▪️ 帳戶當前現金：${remaining_cash:,.0f}"
+                                    ]
+                                    st.session_state[input_key] = 0  # 歸零
+                                else:
+                                    st.session_state.last_messages = [f"❌ 交易失敗: {msg}"]
                             st.rerun()
                 st.divider()
         
@@ -230,6 +267,8 @@ elif st.session_state.page == "main":
             if player["holdings"]:
                 holdings_data = []
                 for sid, h in player["holdings"].items():
+                    if h["shares"] <= 0:
+                        continue
                     price = player["market_prices"][sid]
                     value = h["shares"] * price
                     cost = h["shares"] * h["avg_cost"]
@@ -238,15 +277,18 @@ elif st.session_state.page == "main":
                     holdings_data.append({
                         "代號": sid,
                         "名稱": STOCKS[sid]["name"],
-                        "股數": h["shares"],
-                        "均價": f"${h['avg_cost']:.0f}",
-                        "現價": f"${price:.0f}",
-                        "市值": f"${int(value):,}",
-                        "損益": f"${int(pnl):+,}",
-                        "報酬率": f"{pnl_pct:+.1f}%",
+                        "持股數(零股)": f"{h['shares']:,} 股",
+                        "平均成本": f"${h['avg_cost']:.1f}",
+                        "當前現價": f"${price:.1f}",
+                        "目前市值": f"${int(value):,}",
+                        "累積損益": f"${int(pnl):+,}",
+                        "投資報酬率": f"{pnl_pct:+.1f}%",
                     })
-                df = pd.DataFrame(holdings_data)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                if holdings_data:
+                    df = pd.DataFrame(holdings_data)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("還沒有任何持股,去股市買進吧!")
             else:
                 st.info("還沒有任何持股,去股市買進吧!")
         
@@ -276,9 +318,9 @@ elif st.session_state.page == "main":
             df = pd.DataFrame(df_data)
             st.line_chart(df)
         
-        # ========== 上回合事件訊息 ==========
+        # ========== 上回合事件/交易訊息 ==========
         if st.session_state.last_messages:
-            with st.expander("📬 本月發生的事", expanded=True):
+            with st.expander("📬 本月即時動態 / 交易成交回報", expanded=True):
                 for msg in st.session_state.last_messages:
                     st.write(msg)
         
@@ -301,13 +343,43 @@ elif st.session_state.page == "main":
                 # 2. 推進回合
                 player["turn"] += 1
                 
-                # 3. 看看到沒到結局
+                # 3. 看看是否到結局
                 if player["turn"] > TOTAL_TURNS:
                     st.session_state.page = "ending"
                     st.rerun()
                 
-                # 4. 擲事件骰
+                # 4. 修正 3：加入高機率觸發的「人生抉擇隨機事件」
+                # 丟骰子，讓玩家面臨需要巨額現金、迫使他們決定要不要去賣股的場景
                 event = roll_event(player, player["turn"])
+                
+                # 萬一 events.py 沒抽到，我們在此 MVP 內建一個需要金錢抉擇的臨時事件
+                if not event and random.random() < 0.4:
+                    random_expenses = random.choice([
+                        {"name": "老家屋頂漏水修繕", "cash": 80000, "desc": "老家大雨漏水，身為孝子需要支援修繕費用。"},
+                        {"name": "機車/汽車引擎大修", "cash": 45000, "desc": "上下班工具無預警拋錨，汽缸損壞需要大整修。"},
+                        {"name": "年度高階健康檢查", "cash": 30000, "desc": "為了預防職業病，你決定自費安排全身精密健檢。"},
+                        {"name": "朋友結婚與聚會潮", "cash": 20000, "desc": "這個月炸彈連發，死黨結婚加上各種人脈應酬聚餐。"}
+                    ])
+                    
+                    event = {
+                        "id": "temp_life_expense",
+                        "name": random_expenses["name"],
+                        "category": "人生突發開銷",
+                        "text": f"{random_expenses['desc']} 需要支付現金 **${random_expenses['cash']:,}** 元。如果現金不足，請點擊旁邊分頁賣出股票換現，否則將會違約扣除健康或心情！",
+                        "choices": [
+                            {
+                                "text": f"👍 沒問題，直接用現金大方支付 (${random_expenses['cash']:,} 元)",
+                                "requires": {"cash_min": random_expenses["cash"]},
+                                "effects": {"cash": -random_expenses["cash"], "stats": {"mood": 5}}
+                            },
+                            {
+                                "text": "❌ 兩手攤空：我付不出來 (扣除 20 點健康與 20 點心情)",
+                                "requires": {"cash_min": 0},
+                                "effects": {"stats": {"health": -20, "mood": -20}}
+                            }
+                        ]
+                    }
+                
                 if event:
                     st.session_state.pending_event = event
                 
