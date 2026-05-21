@@ -330,11 +330,11 @@ elif st.session_state.page == "main":
         col_btn1, col_btn2 = st.columns([3, 1])
         with col_btn1:
             if st.button("⏭️ 結束本月 (進入下個月)", type="primary", use_container_width=True):
-                # 1. 月結算
+                # 1. 月結算 (包含領薪水、扣支出、大盤漲跌)
                 sentiment = roll_market_sentiment()
                 messages = monthly_settlement(player, sentiment)
                 
-                # 檢查破產
+                # 檢查是否破產
                 if player["game_over"]:
                     st.session_state.last_messages = messages
                     st.session_state.page = "ending"
@@ -343,57 +343,21 @@ elif st.session_state.page == "main":
                 # 2. 推進回合
                 player["turn"] += 1
                 
-                # 3. 看看是否到結局
+                # 3. 檢查是否到達總年限
                 if player["turn"] > TOTAL_TURNS:
                     st.session_state.page = "ending"
                     st.rerun()
                 
-                # 4. 修正 3：加入高機率觸發的「人生抉擇隨機事件」
-                # 丟骰子，讓玩家面臨需要巨額現金、迫使他們決定要不要去賣股的場景
+                # 4. 💡 直接交給核心引擎抽籤！不管是裁員、中獎還是老家漏水大扣款，都統一在 events.py 抽
                 event = roll_event(player, player["turn"])
-                
-                # 萬一 events.py 沒抽到，我們在此 MVP 內建一個需要金錢抉擇的臨時事件
-                if not event and random.random() < 0.4:
-                    random_expenses = random.choice([
-                        {"name": "老家屋頂漏水修繕", "cash": 80000, "desc": "老家大雨漏水，身為孝子需要支援修繕費用。"},
-                        {"name": "機車/汽車引擎大修", "cash": 45000, "desc": "上下班工具無預警拋錨，汽缸損壞需要大整修。"},
-                        {"name": "年度高階健康檢查", "cash": 30000, "desc": "為了預防職業病，你決定自費安排全身精密健檢。"},
-                        {"name": "朋友結婚與聚會潮", "cash": 20000, "desc": "這個月炸彈連發，死黨結婚加上各種人脈應酬聚餐。"}
-                    ])
-                    
-                    event = {
-                        "id": "temp_life_expense",
-                        "name": random_expenses["name"],
-                        "category": "人生突發開銷",
-                        "text": f"{random_expenses['desc']} 需要支付現金 **${random_expenses['cash']:,}** 元。如果現金不足，請點擊旁邊分頁賣出股票換現，否則將會違約扣除健康或心情！",
-                        "choices": [
-                            {
-                                "text": f"👍 沒問題，直接用現金大方支付 (${random_expenses['cash']:,} 元)",
-                                "requires": {"cash_min": random_expenses["cash"]},
-                                "effects": {"cash": -random_expenses["cash"], "stats": {"mood": 5}}
-                            },
-                            {
-                                "text": "❌ 兩手攤空：我付不出來 (扣除 20 點健康與 20 點心情)",
-                                "requires": {"cash_min": 0},
-                                "effects": {"stats": {"health": -20, "mood": -20}}
-                            }
-                        ]
-                    }
-                
                 if event:
                     st.session_state.pending_event = event
                 
+                # 清空上一輪輸入框殘留的快取數字
+                st.session_state.trade_amounts = {sid: 0 for sid in STOCKS.keys()}
                 st.session_state.last_messages = messages
                 st.rerun()
         
-        with col_btn2:
-            if st.button("🏠 放棄重來", use_container_width=True):
-                st.session_state.page = "start"
-                st.session_state.player = None
-                st.session_state.pending_event = None
-                st.session_state.last_messages = []
-                st.rerun()
-
 
 # ==================== 結局畫面 ====================
 elif st.session_state.page == "ending":
