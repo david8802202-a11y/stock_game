@@ -217,15 +217,36 @@ def monthly_settlement(player, market_sentiment):
         player["unemployed_months"] -= 1
         messages.append(f"😩 失業中 (剩 {player['unemployed_months']} 個月)")
     else:
-        # 每年加薪 4%
+        # 技能度影響加薪幅度 (高技能加薪 8%, 否則依原本職業設定 4%)
+        growth_rate = 0.08 if player["stats"]["skill"] >= 80 else job["salary_growth_yearly"]
         years_worked = (player["turn"] - 1) // 12
-        salary = int(player["monthly_salary"] * ((1 + job["salary_growth_yearly"]) ** years_worked))
+        salary = int(player["monthly_salary"] * ((1 + growth_rate) ** years_worked))
         player["cash"] += salary
-        messages.append(f"💼 領薪 +${salary:,}")
+        messages.append(f"💼 領薪 +${salary:,} (當前年資加薪幅度: {growth_rate*100:.0f}%)")
     
-    # 2. 扣支出
+    # 2. 扣固定支出
     player["cash"] -= player["monthly_expense"]
-    messages.append(f"🏠 月支出 -${player['monthly_expense']:,}")
+    messages.append(f"🏠 月固定支出 -${player['monthly_expense']:,}")
+    
+    # 👉 【新增】3. 個人狀態危機引發的被動扣款
+    # 健康度危機
+    if player["stats"]["health"] <= 0:
+        messages.append("💀 【慘劇】你因為長期過勞、健康度歸零，在辦公桌前不幸過勞倒下...")
+        player["game_over"] = True
+        player["ending"] = "破產"  # 觸發 Game Over，你可以稍後在結局判定判定健康狀況
+        return messages
+    elif player["stats"]["health"] < 20:
+        medical_cost = 25000
+        player["cash"] -= medical_cost
+        messages.append(f"🏥 【健康警訊】你的健康度極低 ({player['stats']['health']})！免疫力崩潰強制住院掛急診，花費醫藥費 ${medical_cost:,}")
+        
+    # 心情度危機
+    if player["stats"]["mood"] < 20:
+        stress_spend = 15000
+        player["cash"] -= stress_spend
+        messages.append(f"🛒 【心情崩潰】你的心情悶到極點 ({player['stats']['mood']})！為了宣洩壓力觸發報復性消費，衝動購物花費 ${stress_spend:,}")
+
+    # ... (維持原本的 3.股價走勢變動 / 4.職業數值漂移 / 5.配息邏輯) ...
     
     # 3. 月內股價走勢
     new_prices, paths = simulate_month(player["market_prices"], market_sentiment)
