@@ -154,8 +154,61 @@ EVENTS = [
         ]
     },
     {
-        "id": "wedding_bombs",
-        "name": "紅色炸彈連發潮",
-        "category": "人生突發開銷",
-        "weight": 4,
-        "min_age": 25, "max_age":
+      "max_age": 40,
+        "once_only": False,
+        "text": "最近身邊朋友接連結婚，這個月收到了好幾張喜帖，需要準備一筆紅包錢。",
+        "choices": [
+            {
+                "text": "包紅包送上祝福 ($12,000)",
+                "requires": {"cash_min": 12000},
+                "effects": {"cash": -12000, "stats": {"social": +10, "mood": +5}}
+            },
+            {
+                "text": "禮到人不到 ($6,000)",
+                "requires": {"cash_min": 6000},
+                "effects": {"cash": -6000, "stats": {"social": +2}}
+            },
+            {
+                "text": "裝死假裝沒看到 (扣除 15 點人脈)",
+                "effects": {"stats": {"social": -15}}
+            }
+        ]
+    }
+]
+
+import random
+
+def can_afford(player, requires):
+    """檢查玩家現金是否足夠執行該選項"""
+    if not requires:
+        return True
+    if "cash_min" in requires and player["cash"] < requires["cash_min"]:
+        return False
+    return True
+
+def roll_event(player, current_turn):
+    """每月隨機抽選是否觸發人生事件"""
+    # 假設每月有 25% 的機率觸發事件
+    if random.random() > 0.25:
+        return None
+        
+    age = 25 + (current_turn - 1) // 12
+    valid_events = []
+    
+    for ev in EVENTS:
+        # 排除已觸發過的一次性事件
+        if ev.get("once_only") and ev["id"] in player["triggered_once"]:
+            continue
+            
+        # 檢查年齡限制
+        if age < ev.get("min_age", 0) or age > ev.get("max_age", 999):
+            continue
+            
+        # 依照權重將事件加入抽選池
+        weight = ev.get("weight", 1)
+        valid_events.extend([ev] * weight)
+        
+    if not valid_events:
+        return None
+        
+    return random.choice(valid_events)
